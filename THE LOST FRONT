@@ -988,68 +988,11 @@ FOVStroke.Parent = FOVCircle
 Instance.new("UICorner", FOVCircle).CornerRadius = UDim.new(1, 0)
 
 --[[ ===== AIMBOT SYSTEM ===== ]]
-local Aimbot = { aiming = false, locked = nil, lockedFPV = false }
+local Aimbot = { aiming = false, locked = nil, lockedFPV = false, damageCounter = 0 }
 
+-- Track RMB down/up for aiming
 Connections.mb2down = Mouse.Button2Down:Connect(function() Aimbot.aiming = true; Aimbot.locked = nil; Aimbot.lockedFPV = false end)
 Connections.mb2up = Mouse.Button2Up:Connect(function() Aimbot.aiming = false; Aimbot.locked = nil; Aimbot.lockedFPV = false end)
-
-local lastMouseUpdate = 0
-task.spawn(function()
-    while not Unloaded do
-        pcall(function()
-            if Config.AIM_Enabled and Aimbot.aiming and Aimbot.locked then
-                local now = tick()
-                if now - lastMouseUpdate > 0.01 then
-                    lastMouseUpdate = now
-                    local cam = Workspace.CurrentCamera
-                    if cam and Aimbot.locked then
-                        local aimPos
-                        if Aimbot.lockedFPV then
-                            local part = Cache.drones[Aimbot.locked]
-                            if part then aimPos = part.Position end
-                        else
-                            local head = Aimbot.locked:FindFirstChild("Head")
-                            if head then
-                                aimPos = head.Position + (head.Velocity * Config.AIM_Prediction)
-                            end
-                        end
-                        
-                        if aimPos then
-                            local screenPos = cam:WorldToViewportPoint(aimPos)
-                            Mouse.Hit = CFrame.new(aimPos)
-                            Mouse.Target = Aimbot.locked
-                            
-                            pcall(function()
-                                local net = game.ReplicatedStorage:FindFirstChild("network")
-                                if net then
-                                    local hitEvent = net:FindFirstChild("hit")
-                                    if hitEvent then hitEvent:FireServer(aimPos) end
-                                    
-                                    local damageEvent = net:FindFirstChild("Damage")
-                                    if damageEvent then damageEvent:FireServer(Aimbot.locked, 25) end
-                                    
-                                    local clickEvent = net:FindFirstChild("Click")
-                                    if clickEvent then clickEvent:FireServer() end
-                                    
-                                    local bulletEvent = net:FindFirstChild("Bullet")
-                                    if bulletEvent then bulletEvent:FireServer(aimPos) end
-                                    
-                                    local shootEvent = net:FindFirstChild("shoot")
-                                    if shootEvent then shootEvent:FireServer(aimPos) end
-                                end
-                            end)
-                            
-                            pcall(function()
-                                if mouse1click then mouse1click() end
-                            end)
-                        end
-                    end
-                end
-            end
-        end)
-        task.wait(0.005)
-    end
-end)
 
 function Aimbot.GetBest(cam)
     local center = Vector2.new(cam.ViewportSize.X/2, cam.ViewportSize.Y/2)
@@ -1131,15 +1074,18 @@ RunService:BindToRenderStep("AimbotCore", Enum.RenderPriority.Camera.Value + 1, 
         local head = Aimbot.locked:FindFirstChild("Head")
         local hum = Aimbot.locked:FindFirstChild("Humanoid")
         if not head or not hum or hum.Health <= 0 then Aimbot.locked = nil; return end
-        aimPos = head.Position + (head.Velocity * Config.AIM_Prediction)
+        -- Aim at head center, slightly adjusted for better accuracy
+        aimPos = head.Position + Vector3.new(0, 0, 0) + (head.Velocity * Config.AIM_Prediction)
     end
     
     local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
     if myRoot then
-        local myPos = myRoot.Position
-        local direction = (aimPos - myPos).Unit
+        local camPos = cam.CFrame.Position
+        -- Calculate direction from camera to target (not from body to target)
+        local direction = (aimPos - camPos).Unit
         
-        local goal = CFrame.new(cam.CFrame.Position, cam.CFrame.Position + direction)
+        -- Create goal CFrame pointing from camera to target
+        local goal = CFrame.new(camPos, camPos + direction)
         local newCF
         if Config.AIM_Smooth <= 0 or Config.AIM_Smooth >= 30 then
             newCF = goal
@@ -1148,6 +1094,11 @@ RunService:BindToRenderStep("AimbotCore", Enum.RenderPriority.Camera.Value + 1, 
             newCF = cam.CFrame:Lerp(goal, smoothVal)
         end
         cam.CFrame = newCF
+        
+        -- Rotate character with camera so weapon moves with body
+        local bodyLookDir = newCF.LookVector
+        local bodyRotation = CFrame.new(myRoot.Position, myRoot.Position + bodyLookDir)
+        myRoot.CFrame = myRoot.CFrame:Lerp(bodyRotation, 0.5)
         
         pcall(function()
             local vm = cam:FindFirstChild("ViewModel")
@@ -1182,17 +1133,115 @@ RunService:BindToRenderStep("AimbotCore", Enum.RenderPriority.Camera.Value + 1, 
                 local weaponHit = net:FindFirstChild("weaponhit")
                 if weaponHit then weaponHit:FireServer(aimPos) end
                 
-                local dmg = net:FindFirstChild("Damage")
-                if dmg then dmg:FireServer(aimPos, Aimbot.locked) end
+                -- Get head for accurate targeting
+                local targetHead = Aimbot.locked:FindFirstChild("Head")
+                
+                -- Fire all projectile/bullet events - these handle the actual damage
+                if targetHead then
+                    local cam = Workspace.CurrentCamera
+                    local direction = (targetHead.Position - cam.CFrame.Position).Unit
+                    
+                    -- Try projectile event
+                    local projectile = net:FindFirstChild("projectile")
+                    if projectile then 
+                        projectile:FireServer(targetHead.Position, Aimbot.locked)
+                        projectile:FireServer(aimPos, Aimbot.locked)
+                        projectile:FireServer(targetHead.Position, direction)
+                    end
+                    
+                    -- Try bullet event
+                    local bullet = net:FindFirstChild("bullet")
+                    if bullet then 
+                        bullet:FireServer(targetHead.Position, Aimbot.locked)
+                        bullet:FireServer(targetHead.Position, direction)
+                        bullet:FireServer(aimPos, 25)
+                        bullet:FireServer(aimPos)
+                    end
+                    
+                    -- Try bullet2 event
+                    local bullet2 = net:FindFirstChild("bullet2")
+                    if bullet2 then 
+                        bullet2:FireServer(targetHead.Position, Aimbot.locked)
+                        bullet2:FireServer(targetHead.Position, direction)
+                        bullet2:FireServer(aimPos)
+                    end
+                    
+                    -- Try obfuscated buIIet (capital I's) - these might be the real ones!
+                    local buIIet = net:FindFirstChild("buIIet")
+                    if buIIet then
+                        buIIet:FireServer(targetHead.Position, Aimbot.locked)
+                        buIIet:FireServer(aimPos, Aimbot.locked)
+                        buIIet:FireServer(targetHead.Position, direction)
+                        buIIet:FireServer(aimPos, 25)
+                    end
+                    
+                    -- Try obfuscated buIIet2 (capital I's)
+                    local buIIet2 = net:FindFirstChild("buIIet2")
+                    if buIIet2 then
+                        buIIet2:FireServer(targetHead.Position, Aimbot.locked)
+                        buIIet2:FireServer(aimPos, Aimbot.locked)
+                        buIIet2:FireServer(targetHead.Position, direction)
+                        buIIet2:FireServer(aimPos, 25)
+                    end
+                    
+                    Aimbot.damageCounter = Aimbot.damageCounter + 1
+                end
+                
+                local click = net:FindFirstChild("Click")
+                if click then click:FireServer() end
                 
                 local shoot = net:FindFirstChild("shoot")
                 if shoot then shoot:FireServer(aimPos) end
+                
+                local bullet = net:FindFirstChild("Bullet")
+                if bullet then bullet:FireServer(aimPos) end
             end
         end)
         
         local mousePos = UserInputService:GetMouseLocation()
         Mouse.Hit = CFrame.new(aimPos)
         Mouse.Target = Aimbot.locked
+    end
+end)
+
+-- Additional damage firing loop for better hit registration
+task.spawn(function()
+    local lastDamageTime = 0
+    while not Unloaded do
+        pcall(function()
+            if Config.AIM_Enabled and Aimbot.aiming and Aimbot.locked then
+                local now = tick()
+                if now - lastDamageTime > 0.05 then  -- Fire damage every 50ms
+                    lastDamageTime = now
+                    local net = game.ReplicatedStorage:FindFirstChild("network")
+                    if net then
+                        local targetHead = Aimbot.locked:FindFirstChild("Head")
+                        if targetHead then
+                            local cam = Workspace.CurrentCamera
+                            local aimPos = targetHead.Position
+                            local direction = (aimPos - cam.CFrame.Position).Unit
+                            
+                            -- Fire all projectile variants
+                            local projectile = net:FindFirstChild("projectile")
+                            if projectile then projectile:FireServer(aimPos, Aimbot.locked) end
+                            
+                            local bullet = net:FindFirstChild("bullet")
+                            if bullet then bullet:FireServer(aimPos, Aimbot.locked) end
+                            
+                            local bullet2 = net:FindFirstChild("bullet2")
+                            if bullet2 then bullet2:FireServer(aimPos, Aimbot.locked) end
+                            
+                            local buIIet = net:FindFirstChild("buIIet")
+                            if buIIet then buIIet:FireServer(aimPos, Aimbot.locked) end
+                            
+                            local buIIet2 = net:FindFirstChild("buIIet2")
+                            if buIIet2 then buIIet2:FireServer(aimPos, Aimbot.locked) end
+                        end
+                    end
+                end
+            end
+        end)
+        task.wait(0.01)
     end
 end)
 
