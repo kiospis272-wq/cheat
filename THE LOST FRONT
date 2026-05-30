@@ -44,6 +44,11 @@ local Config = {
     TRIGGER_Delay = 50,
     TRIGGER_TeamCheck = true,
     
+    SILENT_AIM_Enabled = false,
+    SILENT_AIM_FOV = 120,
+    SILENT_AIM_TargetPart = "Head",
+    SILENT_AIM_ShowFOV = true,
+    
     ESP_CornerBox = false,
     ESP_BoxColor = Color3.fromRGB(255, 50, 50),
     ESP_NameColor = Color3.fromRGB(255, 215, 0),
@@ -987,6 +992,101 @@ FOVStroke.Thickness = 1
 FOVStroke.Parent = FOVCircle
 Instance.new("UICorner", FOVCircle).CornerRadius = UDim.new(1, 0)
 
+--[[ ===== SILENT AIM SYSTEM ===== ]]
+local SilentAim = {
+    FastCastHooked = false,
+    OriginalFastCastNew = nil,
+    OriginalSetVelocity = nil
+}
+
+function SilentAim.GetTarget()
+    local target = nil
+    local closestDist = Config.SILENT_AIM_FOV
+    local camera = workspace.CurrentCamera
+    if not camera then return nil end
+    
+    local centerPos = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+    
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local targetPart = player.Character:FindFirstChild(Config.SILENT_AIM_TargetPart)
+            if targetPart then
+                local screenPos, onScreen = camera:WorldToViewportPoint(targetPart.Position)
+                if onScreen then
+                    local dist = (Vector2.new(screenPos.X, screenPos.Y) - centerPos).Magnitude
+                    if dist < closestDist then
+                        closestDist = dist
+                        target = player
+                    end
+                end
+            end
+        end
+    end
+    return target
+end
+
+function SilentAim.HookFastCast()
+    if SilentAim.FastCastHooked then return end
+    
+    local fastCastModule = nil
+    for _, v in pairs(getgc(true)) do
+        if type(v) == "table" and rawget(v, "new") and rawget(v, "SetVelocity") then
+            fastCastModule = v
+            break
+        end
+    end
+    
+    if fastCastModule then
+        SilentAim.OriginalFastCastNew = fastCastModule.new
+        SilentAim.OriginalSetVelocity = fastCastModule.SetVelocity
+        
+        fastCastModule.new = function(caster, origin, direction, velocity, behavior)
+            if Config.SILENT_AIM_Enabled and not checkcaller() then
+                local target = SilentAim.GetTarget()
+                if target and target.Character then
+                    local targetPart = target.Character:FindFirstChild(Config.SILENT_AIM_TargetPart)
+                    if targetPart then
+                        direction = (targetPart.Position - origin).Unit
+                        velocity = direction * velocity.Magnitude
+                        if behavior then
+                            behavior.Acceleration = Vector3.new(0, -workspace.Gravity * 0.05, 0)
+                        end
+                    end
+                end
+            end
+            return SilentAim.OriginalFastCastNew(caster, origin, direction, velocity, behavior)
+        end
+        
+        fastCastModule.SetVelocity = function(cast, velocity)
+            if Config.SILENT_AIM_Enabled and not checkcaller() then
+                local target = SilentAim.GetTarget()
+                if target and target.Character and cast.RayInfo then
+                    local targetPart = target.Character:FindFirstChild(Config.SILENT_AIM_TargetPart)
+                    if targetPart then
+                        local newDir = (targetPart.Position - cast.RayInfo.Origin).Unit
+                        velocity = newDir * velocity.Magnitude
+                    end
+                end
+            end
+            return SilentAim.OriginalSetVelocity(cast, velocity)
+        end
+        
+        SilentAim.FastCastHooked = true
+    end
+end
+
+--[[ ===== SILENT AIM FOV CIRCLE ===== ]]
+local SilentAimFOVCircle = Instance.new("Frame")
+SilentAimFOVCircle.BackgroundTransparency = 1
+SilentAimFOVCircle.BorderSizePixel = 0
+SilentAimFOVCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+SilentAimFOVCircle.Parent = UI.ScreenGui
+local SilentAimFOVStroke = Instance.new("UIStroke")
+SilentAimFOVStroke.Color = Color3.fromRGB(0, 255, 255)
+SilentAimFOVStroke.Thickness = 1
+SilentAimFOVStroke.Parent = SilentAimFOVCircle
+Instance.new("UICorner", SilentAimFOVCircle).CornerRadius = UDim.new(1, 0)
+
 --[[ ===== AIMBOT SYSTEM ===== ]]
 local Aimbot = { aiming = false, locked = nil, lockedFPV = false, damageCounter = 0 }
 
@@ -1043,6 +1143,15 @@ function Aimbot.Step(cam, screenCenter)
         FOVCircle.Visible = true
     else
         FOVCircle.Visible = false
+    end
+    
+    if Config.SILENT_AIM_Enabled and Config.SILENT_AIM_ShowFOV then
+        SilentAimFOVCircle.Position = UDim2.new(0, screenCenter.X, 0, screenCenter.Y + guiInset.Y)
+        SilentAimFOVCircle.Size = UDim2.new(0, Config.SILENT_AIM_FOV * 2, 0, Config.SILENT_AIM_FOV * 2)
+        SilentAimFOVStroke.Color = SilentAim.GetTarget() and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(0, 255, 255)
+        SilentAimFOVCircle.Visible = true
+    else
+        SilentAimFOVCircle.Visible = false
     end
 end
 
@@ -2287,6 +2396,7 @@ local function createGUI()
 
     local espTab = addTab("ESP")
     local aimTab = addTab("AIM")
+    local silentAimTab = addTab("SILENT AIM")
     local miscTab = addTab("MISC")
 
     createToggle(espTab.left, "Enable ESP", "ESP_Enabled")
@@ -2321,6 +2431,71 @@ local function createGUI()
     createToggle(aimTab.right, "Team Check", "AIM_TeamCheck")
     createToggle(aimTab.right, "Target FPV", "AIM_FPV")
     aimTab.updateCanvas()
+
+    createToggle(silentAimTab.left, "Enable Silent Aim", "SILENT_AIM_Enabled", function()
+        if Config.SILENT_AIM_Enabled then
+            SilentAim.HookFastCast()
+        end
+    end)
+    createToggle(silentAimTab.left, "Show FOV", "SILENT_AIM_ShowFOV")
+    createSlider(silentAimTab.left, "FOV", "SILENT_AIM_FOV", 50, 300, 10)
+    local targetPartLabel = Instance.new("TextLabel")
+    targetPartLabel.Size = UDim2.new(1, -10, 0, 28)
+    targetPartLabel.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+    targetPartLabel.BorderSizePixel = 0
+    targetPartLabel.Text = "Target Part: Head"
+    targetPartLabel.TextColor3 = Color3.fromRGB(240, 240, 250)
+    targetPartLabel.Font = Enum.Font.Gotham
+    targetPartLabel.TextSize = 12
+    targetPartLabel.Parent = silentAimTab.right
+    local tpCorner = Instance.new("UICorner")
+    tpCorner.CornerRadius = UDim.new(0, 6)
+    tpCorner.Parent = targetPartLabel
+    
+    local headBtn = Instance.new("TextButton")
+    headBtn.Size = UDim2.new(0.5, -5, 0, 28)
+    headBtn.Position = UDim2.new(0, 0, 0, 35)
+    headBtn.BackgroundColor3 = Config.SILENT_AIM_TargetPart == "Head" and accentColor or Color3.fromRGB(50, 50, 60)
+    headBtn.BorderSizePixel = 0
+    headBtn.Text = "Head"
+    headBtn.TextColor3 = Color3.new(1, 1, 1)
+    headBtn.Font = Enum.Font.GothamBold
+    headBtn.TextSize = 12
+    headBtn.Parent = silentAimTab.right
+    local hCorner = Instance.new("UICorner")
+    hCorner.CornerRadius = UDim.new(0, 6)
+    hCorner.Parent = headBtn
+    
+    local rootBtn = Instance.new("TextButton")
+    rootBtn.Size = UDim2.new(0.5, -5, 0, 28)
+    rootBtn.Position = UDim2.new(0.5, 5, 0, 35)
+    rootBtn.BackgroundColor3 = Config.SILENT_AIM_TargetPart == "HumanoidRootPart" and accentColor or Color3.fromRGB(50, 50, 60)
+    rootBtn.BorderSizePixel = 0
+    rootBtn.Text = "Root"
+    rootBtn.TextColor3 = Color3.new(1, 1, 1)
+    rootBtn.Font = Enum.Font.GothamBold
+    rootBtn.TextSize = 12
+    rootBtn.Parent = silentAimTab.right
+    local rCorner = Instance.new("UICorner")
+    rCorner.CornerRadius = UDim.new(0, 6)
+    rCorner.Parent = rootBtn
+    
+    headBtn.MouseButton1Click:Connect(function()
+        Config.SILENT_AIM_TargetPart = "Head"
+        targetPartLabel.Text = "Target Part: Head"
+        headBtn.BackgroundColor3 = accentColor
+        rootBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+        SaveConfig()
+    end)
+    
+    rootBtn.MouseButton1Click:Connect(function()
+        Config.SILENT_AIM_TargetPart = "HumanoidRootPart"
+        targetPartLabel.Text = "Target Part: Root"
+        headBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+        rootBtn.BackgroundColor3 = accentColor
+        SaveConfig()
+    end)
+    silentAimTab.updateCanvas()
 
     createToggle(miscTab.left, "Enable Desync", "DESYNC_Enabled")
     createSlider(miscTab.left, "Desync Amount", "DESYNC_Amount", 1, 10, 1)
@@ -2474,6 +2649,9 @@ pcall(function()
             end
         end
         
+        -- Initialize Silent Aim hooking
+        SilentAim.HookFastCast()
+        
         SaveConfig()
     end)
 end)
@@ -2482,6 +2660,8 @@ end)
 if not injector then
     createGUI()
     guiInstance.Enabled = true
+    -- Initialize Silent Aim hooking
+    SilentAim.HookFastCast()
 end
 
 print("✅ FENT.LOL v2.0 ready! Press INJECT to load or [RightShift] to toggle menu.")
