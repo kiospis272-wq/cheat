@@ -29,13 +29,12 @@ local Config = {
     RADAR_Enabled = true,
     RADAR_Size = 120,
     
-    AIM_Enabled = false,
-    AIM_FOV = 150,
-    AIM_Smooth = 15,
-    AIM_ShowFOV = true,
-    AIM_TeamCheck = true,
-    AIM_FPV = false,
-    AIM_Prediction = 0.1,
+    SAIM_Enabled = false,
+    SAIM_FOV = 120,
+    SAIM_TargetPart = "Head",
+    SAIM_ShowFOV = true,
+    SAIM_HitChance = 100,
+    SAIM_FOVColor = Color3.fromRGB(0, 255, 255),
     
     DESYNC_Enabled = false,
     DESYNC_Amount = 2,
@@ -43,11 +42,6 @@ local Config = {
     TRIGGER_Enabled = false,
     TRIGGER_Delay = 50,
     TRIGGER_TeamCheck = true,
-    
-    SILENT_AIM_Enabled = false,
-    SILENT_AIM_FOV = 120,
-    SILENT_AIM_TargetPart = "Head",
-    SILENT_AIM_ShowFOV = true,
     
     ESP_CornerBox = false,
     ESP_BoxColor = Color3.fromRGB(255, 50, 50),
@@ -57,9 +51,11 @@ local Config = {
     CHAMS_Enabled = false,
     CHAMS_Color = Color3.fromRGB(0, 255, 0),
     CHAMS_Transparency = 0.5,
+    CHAMS_TeamCheck = true,
+    
+    FULLBRIGHT_Enabled = false,
     
     CROSSHAIR_Enabled = false,
-    CROSSHAIR_Color = Color3.fromRGB(255, 105, 180),
     
     SKY_Enabled = false,
     SKY_Style = "Dark Sky",
@@ -980,28 +976,23 @@ local function UpdateRadar(cam)
     for i = fpvIdx, #fpvRadarDots do fpvRadarDots[i].Visible = false end
 end
 
---[[ ===== FOV CIRCLE ===== ]]
-local FOVCircle = Instance.new("Frame")
-FOVCircle.BackgroundTransparency = 1
-FOVCircle.BorderSizePixel = 0
-FOVCircle.AnchorPoint = Vector2.new(0.5, 0.5)
-FOVCircle.Parent = UI.ScreenGui
-local FOVStroke = Instance.new("UIStroke")
-FOVStroke.Color = Palette.FOV_Circle
-FOVStroke.Thickness = 1
-FOVStroke.Parent = FOVCircle
-Instance.new("UICorner", FOVCircle).CornerRadius = UDim.new(1, 0)
-
---[[ ===== SILENT AIM SYSTEM ===== ]]
-local SilentAim = {
+--[[ ===== SAIM (SILENT AIM) SYSTEM ===== ]]
+local SAIM = {
     FastCastHooked = false,
     OriginalFastCastNew = nil,
     OriginalSetVelocity = nil
 }
 
-function SilentAim.GetTarget()
+function SAIM.GetTarget()
+    if not Config.SAIM_Enabled then return nil end
+    
+    -- Проверка HitChance
+    if math.random(1, 100) > Config.SAIM_HitChance then
+        return nil
+    end
+    
     local target = nil
-    local closestDist = Config.SILENT_AIM_FOV
+    local closestDist = Config.SAIM_FOV
     local camera = workspace.CurrentCamera
     if not camera then return nil end
     
@@ -1009,10 +1000,12 @@ function SilentAim.GetTarget()
     
     for _, player in pairs(Players:GetPlayers()) do
         if player ~= LocalPlayer and player.Character then
-            local targetPart = player.Character:FindFirstChild(Config.SILENT_AIM_TargetPart)
-            if targetPart then
+            local targetPart = player.Character:FindFirstChild(Config.SAIM_TargetPart)
+            local humanoid = player.Character:FindFirstChild("Humanoid")
+            
+            if targetPart and humanoid and humanoid.Health > 0 then
                 local screenPos, onScreen = camera:WorldToViewportPoint(targetPart.Position)
-                if onScreen then
+                if onScreen and screenPos.Z > 0 then
                     local dist = (Vector2.new(screenPos.X, screenPos.Y) - centerPos).Magnitude
                     if dist < closestDist then
                         closestDist = dist
@@ -1025,8 +1018,8 @@ function SilentAim.GetTarget()
     return target
 end
 
-function SilentAim.HookFastCast()
-    if SilentAim.FastCastHooked then return end
+function SAIM.HookFastCast()
+    if SAIM.FastCastHooked then return end
     
     local fastCastModule = nil
     for _, v in pairs(getgc(true)) do
@@ -1037,322 +1030,75 @@ function SilentAim.HookFastCast()
     end
     
     if fastCastModule then
-        SilentAim.OriginalFastCastNew = fastCastModule.new
-        SilentAim.OriginalSetVelocity = fastCastModule.SetVelocity
+        SAIM.OriginalFastCastNew = fastCastModule.new
+        SAIM.OriginalSetVelocity = fastCastModule.SetVelocity
         
         fastCastModule.new = function(caster, origin, direction, velocity, behavior)
-            if Config.SILENT_AIM_Enabled and not checkcaller() then
-                local target = SilentAim.GetTarget()
+            if Config.SAIM_Enabled and not checkcaller() then
+                local target = SAIM.GetTarget()
                 if target and target.Character then
-                    local targetPart = target.Character:FindFirstChild(Config.SILENT_AIM_TargetPart)
+                    local targetPart = target.Character:FindFirstChild(Config.SAIM_TargetPart)
                     if targetPart then
-                        direction = (targetPart.Position - origin).Unit
+                        -- Предсказание движения цели
+                        local predictedPos = targetPart.Position + (targetPart.Velocity * 0.08)
+                        direction = (predictedPos - origin).Unit
                         velocity = direction * velocity.Magnitude
+                        
                         if behavior then
-                            behavior.Acceleration = Vector3.new(0, -workspace.Gravity * 0.05, 0)
+                            behavior.Acceleration = Vector3.new(0, -workspace.Gravity * 0.03, 0)
                         end
                     end
                 end
             end
-            return SilentAim.OriginalFastCastNew(caster, origin, direction, velocity, behavior)
+            return SAIM.OriginalFastCastNew(caster, origin, direction, velocity, behavior)
         end
         
         fastCastModule.SetVelocity = function(cast, velocity)
-            if Config.SILENT_AIM_Enabled and not checkcaller() then
-                local target = SilentAim.GetTarget()
+            if Config.SAIM_Enabled and not checkcaller() then
+                local target = SAIM.GetTarget()
                 if target and target.Character and cast.RayInfo then
-                    local targetPart = target.Character:FindFirstChild(Config.SILENT_AIM_TargetPart)
+                    local targetPart = target.Character:FindFirstChild(Config.SAIM_TargetPart)
                     if targetPart then
-                        local newDir = (targetPart.Position - cast.RayInfo.Origin).Unit
+                        local predictedPos = targetPart.Position + (targetPart.Velocity * 0.08)
+                        local newDir = (predictedPos - cast.RayInfo.Origin).Unit
                         velocity = newDir * velocity.Magnitude
                     end
                 end
             end
-            return SilentAim.OriginalSetVelocity(cast, velocity)
+            return SAIM.OriginalSetVelocity(cast, velocity)
         end
         
-        SilentAim.FastCastHooked = true
+        SAIM.FastCastHooked = true
+        print("✅ SAIM hooked successfully")
     end
 end
 
---[[ ===== SILENT AIM FOV CIRCLE ===== ]]
-local SilentAimFOVCircle = Instance.new("Frame")
-SilentAimFOVCircle.BackgroundTransparency = 1
-SilentAimFOVCircle.BorderSizePixel = 0
-SilentAimFOVCircle.AnchorPoint = Vector2.new(0.5, 0.5)
-SilentAimFOVCircle.Parent = UI.ScreenGui
-local SilentAimFOVStroke = Instance.new("UIStroke")
-SilentAimFOVStroke.Color = Color3.fromRGB(0, 255, 255)
-SilentAimFOVStroke.Thickness = 1
-SilentAimFOVStroke.Parent = SilentAimFOVCircle
-Instance.new("UICorner", SilentAimFOVCircle).CornerRadius = UDim.new(1, 0)
+--[[ ===== SAIM FOV CIRCLE ===== ]]
+local SAIMFOVCircle = Instance.new("Frame")
+SAIMFOVCircle.BackgroundTransparency = 1
+SAIMFOVCircle.BorderSizePixel = 0
+SAIMFOVCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+SAIMFOVCircle.Parent = UI.ScreenGui
+local SAIMFOVStroke = Instance.new("UIStroke")
+SAIMFOVStroke.Color = Color3.fromRGB(0, 255, 255)
+SAIMFOVStroke.Thickness = 1
+SAIMFOVStroke.Parent = SAIMFOVCircle
+Instance.new("UICorner", SAIMFOVCircle).CornerRadius = UDim.new(1, 0)
 
---[[ ===== AIMBOT SYSTEM ===== ]]
-local Aimbot = { aiming = false, locked = nil, lockedFPV = false, damageCounter = 0 }
-
--- Track RMB down/up for aiming
-Connections.mb2down = Mouse.Button2Down:Connect(function() Aimbot.aiming = true; Aimbot.locked = nil; Aimbot.lockedFPV = false end)
-Connections.mb2up = Mouse.Button2Up:Connect(function() Aimbot.aiming = false; Aimbot.locked = nil; Aimbot.lockedFPV = false end)
-
-function Aimbot.GetBest(cam)
-    local center = Vector2.new(cam.ViewportSize.X/2, cam.ViewportSize.Y/2)
-    local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if not myRoot then return nil end
-    local best, bestDist, isFPV = nil, math.huge, false
-    for root, char in pairs(Cache.targets) do
-        if root and root.Parent and char then
-            if not (Config.AIM_TeamCheck and Cache.teamStatus[root]) then
-                local head = char:FindFirstChild("Head")
-                if head then
-                    local sp, on = cam:WorldToViewportPoint(head.Position)
-                    if on and sp.Z > 0 then
-                        local sDist = (Vector2.new(sp.X, sp.Y) - center).Magnitude
-                        if sDist <= Config.AIM_FOV then
-                            local wDist = (root.Position - myRoot.Position).Magnitude
-                            if wDist < bestDist then bestDist = wDist; best = char; isFPV = false end
-                        end
-                    end
-                end
-            end
-        end
-    end
-    if Config.AIM_FPV then
-        for drone, part in pairs(Cache.drones) do
-            if drone and part and part.Parent then
-                local sp, on = cam:WorldToViewportPoint(part.Position)
-                if on and sp.Z > 0 then
-                    local sDist = (Vector2.new(sp.X, sp.Y) - center).Magnitude
-                    if sDist <= Config.AIM_FOV then
-                        local wDist = (part.Position - myRoot.Position).Magnitude
-                        if wDist < bestDist then bestDist = wDist; best = drone; isFPV = true end
-                    end
-                end
-            end
-        end
-    end
-    return best, isFPV
-end
-
-function Aimbot.Step(cam, screenCenter)
+function SAIM.RenderFOV(cam, screenCenter)
     local guiInset = GuiService:GetGuiInset()
     
-    if Config.AIM_Enabled and Config.AIM_ShowFOV then
-        FOVCircle.Position = UDim2.new(0, screenCenter.X, 0, screenCenter.Y + guiInset.Y)
-        FOVCircle.Size = UDim2.new(0, Config.AIM_FOV * 2, 0, Config.AIM_FOV * 2)
-        FOVStroke.Color = (Aimbot.aiming and Aimbot.locked) and Palette.FOV_Active or Palette.FOV_Circle
-        FOVCircle.Visible = true
+    if Config.SAIM_Enabled and Config.SAIM_ShowFOV then
+        SAIMFOVCircle.Position = UDim2.new(0, screenCenter.X, 0, screenCenter.Y + guiInset.Y)
+        SAIMFOVCircle.Size = UDim2.new(0, Config.SAIM_FOV * 2, 0, Config.SAIM_FOV * 2)
+        SAIMFOVStroke.Color = SAIM.GetTarget() and Color3.fromRGB(255, 0, 0) or Config.SAIM_FOVColor
+        SAIMFOVCircle.Visible = true
     else
-        FOVCircle.Visible = false
-    end
-    
-    if Config.SILENT_AIM_Enabled and Config.SILENT_AIM_ShowFOV then
-        SilentAimFOVCircle.Position = UDim2.new(0, screenCenter.X, 0, screenCenter.Y + guiInset.Y)
-        SilentAimFOVCircle.Size = UDim2.new(0, Config.SILENT_AIM_FOV * 2, 0, Config.SILENT_AIM_FOV * 2)
-        SilentAimFOVStroke.Color = SilentAim.GetTarget() and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(0, 255, 255)
-        SilentAimFOVCircle.Visible = true
-    else
-        SilentAimFOVCircle.Visible = false
+        SAIMFOVCircle.Visible = false
     end
 end
 
-RunService:BindToRenderStep("AimbotCore", Enum.RenderPriority.Camera.Value + 1, function()
-    if Unloaded or not Config.AIM_Enabled then return end
-    local rmb = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
-    if not (Aimbot.aiming or rmb) then Aimbot.locked = nil; Aimbot.lockedFPV = false; return end
-    
-    local cam = Workspace.CurrentCamera
-    if not cam then return end
-    
-    local needNewTarget = not Aimbot.locked or not Aimbot.locked.Parent
-    if not needNewTarget and not Aimbot.lockedFPV then
-        needNewTarget = not Aimbot.locked:FindFirstChild("Head")
-    end
-    if needNewTarget then
-        local target, isFPV = Aimbot.GetBest(cam)
-        Aimbot.locked = target
-        Aimbot.lockedFPV = isFPV or false
-    end
-    if not Aimbot.locked then return end
-    
-    local aimPos
-    if Aimbot.lockedFPV then
-        local part = Cache.drones[Aimbot.locked]
-        if not part or not part.Parent then Aimbot.locked = nil; Aimbot.lockedFPV = false; return end
-        aimPos = part.Position
-    else
-        local head = Aimbot.locked:FindFirstChild("Head")
-        local hum = Aimbot.locked:FindFirstChild("Humanoid")
-        if not head or not hum or hum.Health <= 0 then Aimbot.locked = nil; return end
-        -- Aim at head center, slightly adjusted for better accuracy
-        aimPos = head.Position + Vector3.new(0, 0, 0) + (head.Velocity * Config.AIM_Prediction)
-    end
-    
-    local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if myRoot then
-        local camPos = cam.CFrame.Position
-        -- Calculate direction from camera to target (not from body to target)
-        local direction = (aimPos - camPos).Unit
-        
-        -- Create goal CFrame pointing from camera to target
-        local goal = CFrame.new(camPos, camPos + direction)
-        local newCF
-        if Config.AIM_Smooth <= 0 or Config.AIM_Smooth >= 30 then
-            newCF = goal
-        else
-            local smoothVal = math.clamp(1 - (Config.AIM_Smooth / 30) * 0.95, 0.05, 0.95)
-            newCF = cam.CFrame:Lerp(goal, smoothVal)
-        end
-        cam.CFrame = newCF
-        
-        -- Rotate character with camera so weapon moves with body
-        local bodyLookDir = newCF.LookVector
-        local bodyRotation = CFrame.new(myRoot.Position, myRoot.Position + bodyLookDir)
-        myRoot.CFrame = myRoot.CFrame:Lerp(bodyRotation, 0.5)
-        
-        pcall(function()
-            local vm = cam:FindFirstChild("ViewModel")
-            if vm then
-                local cb = vm:FindFirstChild("CameraBone")
-                if cb then cb.CFrame = newCF end
-                local hrp = vm:FindFirstChild("HRP")
-                if hrp then hrp.CFrame = newCF end
-            end
-        end)
-        
-        local lookDir = newCF.LookVector
-        pcall(function()
-            local net = game.ReplicatedStorage:FindFirstChild("network")
-            if net then
-                local lv = net:FindFirstChild("characterLookvector")
-                if lv then
-                    lv:FireServer(lookDir)
-                    lv:FireServer(aimPos)
-                end
-                local camSync = net:FindFirstChild("camera")
-                if camSync then 
-                    camSync:FireServer(newCF.Position, lookDir)
-                    camSync:FireServer(newCF)
-                end
-                local setLook = net:FindFirstChild("setLookvector")
-                if setLook then setLook:FireServer(lookDir) end
-                
-                local hitEvent = net:FindFirstChild("hit")
-                if hitEvent then hitEvent:FireServer(aimPos) end
-                
-                local weaponHit = net:FindFirstChild("weaponhit")
-                if weaponHit then weaponHit:FireServer(aimPos) end
-                
-                -- Get head for accurate targeting
-                local targetHead = Aimbot.locked:FindFirstChild("Head")
-                
-                -- Fire all projectile/bullet events - these handle the actual damage
-                if targetHead then
-                    local cam = Workspace.CurrentCamera
-                    local direction = (targetHead.Position - cam.CFrame.Position).Unit
-                    
-                    -- Try projectile event
-                    local projectile = net:FindFirstChild("projectile")
-                    if projectile then 
-                        projectile:FireServer(targetHead.Position, Aimbot.locked)
-                        projectile:FireServer(aimPos, Aimbot.locked)
-                        projectile:FireServer(targetHead.Position, direction)
-                    end
-                    
-                    -- Try bullet event
-                    local bullet = net:FindFirstChild("bullet")
-                    if bullet then 
-                        bullet:FireServer(targetHead.Position, Aimbot.locked)
-                        bullet:FireServer(targetHead.Position, direction)
-                        bullet:FireServer(aimPos, 25)
-                        bullet:FireServer(aimPos)
-                    end
-                    
-                    -- Try bullet2 event
-                    local bullet2 = net:FindFirstChild("bullet2")
-                    if bullet2 then 
-                        bullet2:FireServer(targetHead.Position, Aimbot.locked)
-                        bullet2:FireServer(targetHead.Position, direction)
-                        bullet2:FireServer(aimPos)
-                    end
-                    
-                    -- Try obfuscated buIIet (capital I's) - these might be the real ones!
-                    local buIIet = net:FindFirstChild("buIIet")
-                    if buIIet then
-                        buIIet:FireServer(targetHead.Position, Aimbot.locked)
-                        buIIet:FireServer(aimPos, Aimbot.locked)
-                        buIIet:FireServer(targetHead.Position, direction)
-                        buIIet:FireServer(aimPos, 25)
-                    end
-                    
-                    -- Try obfuscated buIIet2 (capital I's)
-                    local buIIet2 = net:FindFirstChild("buIIet2")
-                    if buIIet2 then
-                        buIIet2:FireServer(targetHead.Position, Aimbot.locked)
-                        buIIet2:FireServer(aimPos, Aimbot.locked)
-                        buIIet2:FireServer(targetHead.Position, direction)
-                        buIIet2:FireServer(aimPos, 25)
-                    end
-                    
-                    Aimbot.damageCounter = Aimbot.damageCounter + 1
-                end
-                
-                local click = net:FindFirstChild("Click")
-                if click then click:FireServer() end
-                
-                local shoot = net:FindFirstChild("shoot")
-                if shoot then shoot:FireServer(aimPos) end
-                
-                local bullet = net:FindFirstChild("Bullet")
-                if bullet then bullet:FireServer(aimPos) end
-            end
-        end)
-        
-        local mousePos = UserInputService:GetMouseLocation()
-        Mouse.Hit = CFrame.new(aimPos)
-        Mouse.Target = Aimbot.locked
-    end
-end)
-
--- Additional damage firing loop for better hit registration
-task.spawn(function()
-    local lastDamageTime = 0
-    while not Unloaded do
-        pcall(function()
-            if Config.AIM_Enabled and Aimbot.aiming and Aimbot.locked then
-                local now = tick()
-                if now - lastDamageTime > 0.05 then  -- Fire damage every 50ms
-                    lastDamageTime = now
-                    local net = game.ReplicatedStorage:FindFirstChild("network")
-                    if net then
-                        local targetHead = Aimbot.locked:FindFirstChild("Head")
-                        if targetHead then
-                            local cam = Workspace.CurrentCamera
-                            local aimPos = targetHead.Position
-                            local direction = (aimPos - cam.CFrame.Position).Unit
-                            
-                            -- Fire all projectile variants
-                            local projectile = net:FindFirstChild("projectile")
-                            if projectile then projectile:FireServer(aimPos, Aimbot.locked) end
-                            
-                            local bullet = net:FindFirstChild("bullet")
-                            if bullet then bullet:FireServer(aimPos, Aimbot.locked) end
-                            
-                            local bullet2 = net:FindFirstChild("bullet2")
-                            if bullet2 then bullet2:FireServer(aimPos, Aimbot.locked) end
-                            
-                            local buIIet = net:FindFirstChild("buIIet")
-                            if buIIet then buIIet:FireServer(aimPos, Aimbot.locked) end
-                            
-                            local buIIet2 = net:FindFirstChild("buIIet2")
-                            if buIIet2 then buIIet2:FireServer(aimPos, Aimbot.locked) end
-                        end
-                    end
-                end
-            end
-        end)
-        task.wait(0.01)
-    end
-end)
+--[[ ===== DESYNC SYSTEM ===== ]]
 
 --[[ ===== DESYNC SYSTEM ===== ]]
 local Desync = { active = false }
@@ -1559,7 +1305,14 @@ function Chams.Update()
         if plr ~= LocalPlayer and plr.Character then
             local char = plr.Character
             local isTeam = Team.isTeammate(char)
-            if Config.CHAMS_Enabled and not isTeam then
+            
+            -- Пропускаем союзников если TeamCheck включён
+            if Config.CHAMS_TeamCheck and isTeam then
+                for _, part in ipairs(char:GetDescendants()) do
+                    local adorn = part:FindFirstChild("ChamsAdorn")
+                    if adorn then pcall(function() adorn:Destroy() end) end
+                end
+            elseif Config.CHAMS_Enabled then
                 for _, part in ipairs(char:GetDescendants()) do
                     if part:IsA("BasePart") and not part:FindFirstChild("ChamsAdorn") then
                         local vis = Cache.visibility[char:FindFirstChild("HumanoidRootPart")] or false
@@ -1590,58 +1343,117 @@ function Chams.Update()
     end
 end
 
---[[ ===== CROSSHAIR SYSTEM ===== ]]
-local CrosshairGui = nil
+--[[ ===== FULLBRIGHT SYSTEM ===== ]]
+local Fullbright = {
+    originalAmbient = nil,
+    originalBrightness = nil,
+    originalOutdoorAmbient = nil,
+    originalClockTime = nil,
+    enabled = false
+}
 
-function CreateCrosshair()
-    if CrosshairGui then pcall(function() CrosshairGui:Destroy() end) end
-    CrosshairGui = Instance.new("ScreenGui")
-    CrosshairGui.Name = "Crosshair"
-    CrosshairGui.ResetOnSpawn = false
-    CrosshairGui.IgnoreGuiInset = true
-    CrosshairGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    CrosshairGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+function Fullbright.Enable()
+    local lighting = game:GetService("Lighting")
+    if not Fullbright.originalAmbient then
+        Fullbright.originalAmbient = lighting.Ambient
+        Fullbright.originalBrightness = lighting.Brightness
+        Fullbright.originalOutdoorAmbient = lighting.OutdoorAmbient
+        Fullbright.originalClockTime = lighting.ClockTime
+    end
+    lighting.Ambient = Color3.new(1, 1, 1)
+    lighting.Brightness = 3
+    lighting.OutdoorAmbient = Color3.new(1, 1, 1)
+    lighting.ClockTime = 14
+    Fullbright.enabled = true
+end
+
+function Fullbright.Disable()
+    local lighting = game:GetService("Lighting")
+    if Fullbright.originalAmbient then
+        lighting.Ambient = Fullbright.originalAmbient
+        lighting.Brightness = Fullbright.originalBrightness
+        lighting.OutdoorAmbient = Fullbright.originalOutdoorAmbient
+        lighting.ClockTime = Fullbright.originalClockTime
+    end
+    Fullbright.enabled = false
+end
+
+function Fullbright.Update()
+    if Config.FULLBRIGHT_Enabled then
+        if not Fullbright.enabled then
+            Fullbright.Enable()
+        end
+        -- Постоянно применяем (на случай если игра сбрасывает)
+        local lighting = game:GetService("Lighting")
+        lighting.Ambient = Color3.new(1, 1, 1)
+        lighting.Brightness = 3
+        lighting.OutdoorAmbient = Color3.new(1, 1, 1)
+        lighting.ClockTime = 14
+    else
+        if Fullbright.enabled then
+            Fullbright.Disable()
+        end
+    end
+end
+
+--[[ ===== VLONE WATERMARK SYSTEM ===== ]]
+local VloneWatermark = nil
+
+function CreateVloneWatermark()
+    if VloneWatermark then return end
+    
+    VloneWatermark = Instance.new("ScreenGui")
+    VloneWatermark.Name = "VloneWatermark"
+    VloneWatermark.ResetOnSpawn = false
+    VloneWatermark.IgnoreGuiInset = true
+    VloneWatermark.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    pcall(function() VloneWatermark.Parent = game:GetService("CoreGui") end)
+    if not VloneWatermark.Parent then
+        VloneWatermark.Parent = LocalPlayer:WaitForChild("PlayerGui")
+    end
     
     local container = Instance.new("Frame")
-    container.Size = UDim2.new(0, 200, 0, 60)
-    container.AnchorPoint = Vector2.new(0.5, 0.5)
+    container.Name = "Container"
+    container.Size = UDim2.new(0, 250, 0, 70)
+    container.AnchorPoint = Vector2.new(0.5, 1)
     container.BackgroundTransparency = 1
-    container.Parent = CrosshairGui
+    container.Position = UDim2.new(0.5, 0, 1, -20)  -- Внизу по центру
+    container.Parent = VloneWatermark
     
     local symbol = Instance.new("TextLabel")
+    symbol.Name = "Symbol"
     symbol.Text = "VLONE.WIN"
     symbol.Font = Enum.Font.GothamBold
-    symbol.TextSize = 28
-    symbol.TextColor3 = Config.CROSSHAIR_Color
+    symbol.TextSize = 32
+    symbol.TextColor3 = Color3.fromRGB(255, 105, 180)
     symbol.BackgroundTransparency = 1
     symbol.Size = UDim2.new(1, 0, 1, 0)
     symbol.TextXAlignment = Enum.TextXAlignment.Center
     symbol.TextYAlignment = Enum.TextYAlignment.Center
-    local stroke = Instance.new("UIStroke")
-    stroke.Thickness = 2
-    stroke.Color = Color3.new(0, 0, 0)
-    stroke.Parent = symbol
     symbol.Parent = container
     
-    local time = 0
-    local conn = RunService.RenderStepped:Connect(function()
-        if not Config.CROSSHAIR_Enabled then
-            container.Visible = false
-            return
-        end
-        container.Visible = true
-        local mousePos = UserInputService:GetMouseLocation()
-        container.Position = UDim2.new(0, mousePos.X, 0, mousePos.Y)
-        
-        time = time + 0.03
-        local hue = (time * 0.3) % 1
-        local rainbowColor = Color3.fromHSV(hue, 0.8, 1)
-        symbol.TextColor3 = rainbowColor
-        container.Rotation = (time * 15) % 360
-    end)
+    local stroke = Instance.new("UIStroke")
+    stroke.Thickness = 2.5
+    stroke.Color = Color3.new(0, 0, 0)
+    stroke.Parent = symbol
     
-    Connections.crosshair = conn
+    -- Радужная анимация
+    task.spawn(function()
+        local time = 0
+        while VloneWatermark and VloneWatermark.Parent and not Unloaded do
+            pcall(function()
+                time = time + 0.03
+                local hue = (time * 0.3) % 1
+                symbol.TextColor3 = Color3.fromHSV(hue, 0.8, 1)
+                container.Rotation = math.sin(time * 2) * 3  -- Легкое покачивание
+            end)
+            task.wait(0.016)
+        end
+    end)
 end
+
+-- Создаём сразу
+CreateVloneWatermark()
 
 --[[ ===== SKY SYSTEM ===== ]]
 local SkyAssets = {
@@ -1681,6 +1493,7 @@ task.spawn(function()
     while not Unloaded do
         pcall(function() CornerBoxESP.Update() end)
         pcall(function() Chams.Update() end)
+        pcall(function() Fullbright.Update() end)
         task.wait(0.016)
     end
 end)
@@ -2296,7 +2109,7 @@ local function createGUI()
     end
 
     local tabContainer = Instance.new("Frame")
-    tabContainer.Size = UDim2.new(0, 160, 1, -55)
+    tabContainer.Size = UDim2.new(0, 160, 0, 180)  -- Фиксированная высота для вкладок
     tabContainer.Position = UDim2.new(0, 10, 0, 50)
     tabContainer.BackgroundTransparency = 1
     tabContainer.Parent = mainFrame
@@ -2304,6 +2117,166 @@ local function createGUI()
     tabList.Padding = UDim.new(0, 8)
     tabList.SortOrder = Enum.SortOrder.LayoutOrder
     tabList.Parent = tabContainer
+    
+    -- Панель информации игрока
+    local playerInfoPanel = Instance.new("Frame")
+    playerInfoPanel.Size = UDim2.new(0, 160, 0, 250)
+    playerInfoPanel.Position = UDim2.new(0, 10, 0, 240)
+    playerInfoPanel.BackgroundColor3 = Color3.fromRGB(20, 20, 26)
+    playerInfoPanel.BorderSizePixel = 0
+    playerInfoPanel.Parent = mainFrame
+    local playerCorner = Instance.new("UICorner")
+    playerCorner.CornerRadius = UDim.new(0, 8)
+    playerCorner.Parent = playerInfoPanel
+    local playerStroke = Instance.new("UIStroke")
+    playerStroke.Color = Color3.fromRGB(40, 40, 50)
+    playerStroke.Thickness = 1
+    playerStroke.Parent = playerInfoPanel
+    
+    -- Аватар
+    local avatar = Instance.new("ImageLabel")
+    avatar.Size = UDim2.new(0, 60, 0, 60)
+    avatar.Position = UDim2.new(0.5, -30, 0, 15)
+    avatar.BackgroundTransparency = 1
+    avatar.Image = "https://www.roblox.com/headshot-thumbnail/image?userId=" .. LocalPlayer.UserId .. "&width=150&height=150&format=png"
+    avatar.Parent = playerInfoPanel
+    local avatarCorner = Instance.new("UICorner")
+    avatarCorner.CornerRadius = UDim.new(0, 8)
+    avatarCorner.Parent = avatar
+    
+    -- Display Name
+    local displayName = Instance.new("TextLabel")
+    displayName.Size = UDim2.new(1, -20, 0, 20)
+    displayName.Position = UDim2.new(0, 10, 0, 85)
+    displayName.BackgroundTransparency = 1
+    displayName.Text = LocalPlayer.DisplayName
+    displayName.TextColor3 = Color3.fromRGB(255, 255, 255)
+    displayName.Font = Enum.Font.GothamBold
+    displayName.TextSize = 14
+    displayName.TextXAlignment = Enum.TextXAlignment.Center
+    displayName.TextTruncate = Enum.TextTruncate.AtEnd
+    displayName.Parent = playerInfoPanel
+    
+    -- Username
+    local username = Instance.new("TextLabel")
+    username.Size = UDim2.new(1, -20, 0, 16)
+    username.Position = UDim2.new(0, 10, 0, 105)
+    username.BackgroundTransparency = 1
+    username.Text = "@" .. LocalPlayer.Name
+    username.TextColor3 = Color3.fromRGB(150, 150, 150)
+    username.Font = Enum.Font.Gotham
+    username.TextSize = 11
+    username.TextXAlignment = Enum.TextXAlignment.Center
+    username.TextTruncate = Enum.TextTruncate.AtEnd
+    username.Parent = playerInfoPanel
+    
+    -- Разделитель
+    local separator = Instance.new("Frame")
+    separator.Size = UDim2.new(1, -20, 0, 1)
+    separator.Position = UDim2.new(0, 10, 0, 135)
+    separator.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+    separator.BorderSizePixel = 0
+    separator.Parent = playerInfoPanel
+    
+    -- Executions counter
+    local executionCount = 0
+    pcall(function()
+        if isfile("fent_executions.txt") then
+            executionCount = tonumber(readfile("fent_executions.txt")) or 0
+        end
+        executionCount = executionCount + 1
+        writefile("fent_executions.txt", tostring(executionCount))
+    end)
+    
+    local execLabel = Instance.new("TextLabel")
+    execLabel.Size = UDim2.new(1, -20, 0, 18)
+    execLabel.Position = UDim2.new(0, 10, 0, 150)
+    execLabel.BackgroundTransparency = 1
+    execLabel.Text = "Executions"
+    execLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+    execLabel.Font = Enum.Font.Gotham
+    execLabel.TextSize = 11
+    execLabel.TextXAlignment = Enum.TextXAlignment.Left
+    execLabel.Parent = playerInfoPanel
+    
+    local execCount = Instance.new("TextLabel")
+    execCount.Size = UDim2.new(1, -20, 0, 18)
+    execCount.Position = UDim2.new(0, 10, 0, 150)
+    execCount.BackgroundTransparency = 1
+    execCount.Text = tostring(executionCount)
+    execCount.TextColor3 = Color3.fromRGB(0, 255, 0)
+    execCount.Font = Enum.Font.GothamBold
+    execCount.TextSize = 11
+    execCount.TextXAlignment = Enum.TextXAlignment.Right
+    execCount.Parent = playerInfoPanel
+    
+    -- FPS counter
+    local fpsLabel = Instance.new("TextLabel")
+    fpsLabel.Size = UDim2.new(1, -20, 0, 18)
+    fpsLabel.Position = UDim2.new(0, 10, 0, 175)
+    fpsLabel.BackgroundTransparency = 1
+    fpsLabel.Text = "FPS"
+    fpsLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+    fpsLabel.Font = Enum.Font.Gotham
+    fpsLabel.TextSize = 11
+    fpsLabel.TextXAlignment = Enum.TextXAlignment.Left
+    fpsLabel.Parent = playerInfoPanel
+    
+    local fpsCount = Instance.new("TextLabel")
+    fpsCount.Size = UDim2.new(1, -20, 0, 18)
+    fpsCount.Position = UDim2.new(0, 10, 0, 175)
+    fpsCount.BackgroundTransparency = 1
+    fpsCount.Text = "60"
+    fpsCount.TextColor3 = Color3.fromRGB(0, 255, 0)
+    fpsCount.Font = Enum.Font.GothamBold
+    fpsCount.TextSize = 11
+    fpsCount.TextXAlignment = Enum.TextXAlignment.Right
+    fpsCount.Parent = playerInfoPanel
+    
+    -- Ping counter
+    local pingLabel = Instance.new("TextLabel")
+    pingLabel.Size = UDim2.new(1, -20, 0, 18)
+    pingLabel.Position = UDim2.new(0, 10, 0, 200)
+    pingLabel.BackgroundTransparency = 1
+    pingLabel.Text = "Ping"
+    pingLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+    pingLabel.Font = Enum.Font.Gotham
+    pingLabel.TextSize = 11
+    pingLabel.TextXAlignment = Enum.TextXAlignment.Left
+    pingLabel.Parent = playerInfoPanel
+    
+    local pingCount = Instance.new("TextLabel")
+    pingCount.Size = UDim2.new(1, -20, 0, 18)
+    pingCount.Position = UDim2.new(0, 10, 0, 200)
+    pingCount.BackgroundTransparency = 1
+    pingCount.Text = "0ms"
+    pingCount.TextColor3 = Color3.fromRGB(0, 255, 0)
+    pingCount.Font = Enum.Font.GothamBold
+    pingCount.TextSize = 11
+    pingCount.TextXAlignment = Enum.TextXAlignment.Right
+    pingCount.Parent = playerInfoPanel
+    
+    -- Обновление FPS и Ping
+    task.spawn(function()
+        local lastUpdate = tick()
+        local frames = 0
+        RunService.RenderStepped:Connect(function()
+            frames = frames + 1
+            local now = tick()
+            if now - lastUpdate >= 1 then
+                local fps = frames
+                fpsCount.Text = tostring(fps)
+                fpsCount.TextColor3 = fps >= 50 and Color3.fromRGB(0, 255, 0) or fps >= 30 and Color3.fromRGB(255, 255, 0) or Color3.fromRGB(255, 0, 0)
+                frames = 0
+                lastUpdate = now
+                
+                -- Ping
+                local ping = math.floor(game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue())
+                pingCount.Text = ping .. "ms"
+                pingCount.TextColor3 = ping <= 50 and Color3.fromRGB(0, 255, 0) or ping <= 100 and Color3.fromRGB(255, 255, 0) or Color3.fromRGB(255, 0, 0)
+            end
+        end)
+    end)
 
     local contentContainer = Instance.new("Frame")
     contentContainer.Size = UDim2.new(1, -180, 1, -65)
@@ -2394,9 +2367,8 @@ local function createGUI()
         return {left = leftCol, right = rightCol, updateCanvas = updateCanvas}
     end
 
+    local saimTab = addTab("SAIM")
     local espTab = addTab("ESP")
-    local aimTab = addTab("AIM")
-    local silentAimTab = addTab("SILENT AIM")
     local miscTab = addTab("MISC")
 
     createToggle(espTab.left, "Enable ESP", "ESP_Enabled")
@@ -2423,22 +2395,30 @@ local function createGUI()
     createSlider(espTab.right, "Radar Size", "RADAR_Size", 80, 200, 10)
     espTab.updateCanvas()
 
-    createToggle(aimTab.left, "Enable Aimbot", "AIM_Enabled")
-    createToggle(aimTab.left, "Show FOV", "AIM_ShowFOV")
-    createSlider(aimTab.left, "FOV", "AIM_FOV", 50, 300, 10)
-    createSlider(aimTab.left, "Smooth", "AIM_Smooth", 1, 30, 1)
-    createSlider(aimTab.left, "Prediction", "AIM_Prediction", 0, 0.5, 0.05)
-    createToggle(aimTab.right, "Team Check", "AIM_TeamCheck")
-    createToggle(aimTab.right, "Target FPV", "AIM_FPV")
-    aimTab.updateCanvas()
-
-    createToggle(silentAimTab.left, "Enable Silent Aim", "SILENT_AIM_Enabled", function()
-        if Config.SILENT_AIM_Enabled then
-            SilentAim.HookFastCast()
+    createToggle(saimTab.left, "Enable SAIM", "SAIM_Enabled", function()
+        if Config.SAIM_Enabled then
+            SAIM.HookFastCast()
         end
     end)
-    createToggle(silentAimTab.left, "Show FOV", "SILENT_AIM_ShowFOV")
-    createSlider(silentAimTab.left, "FOV", "SILENT_AIM_FOV", 50, 300, 10)
+    createToggle(saimTab.left, "Show FOV", "SAIM_ShowFOV")
+    createSlider(saimTab.left, "FOV", "SAIM_FOV", 50, 300, 10)
+    createSlider(saimTab.left, "HitChance %", "SAIM_HitChance", 1, 100, 1)
+    
+    -- Разделитель
+    local separator1 = Instance.new("Frame")
+    separator1.Size = UDim2.new(1, -10, 0, 2)
+    separator1.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+    separator1.BorderSizePixel = 0
+    separator1.Parent = saimTab.left
+    local sepGradient1 = Instance.new("UIGradient")
+    sepGradient1.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 50, 50)),
+        ColorSequenceKeypoint.new(0.5, Color3.fromRGB(255, 100, 100)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 50, 50))
+    })
+    sepGradient1.Parent = separator1
+    
+    createColorSliders(saimTab.left, "FOV Color", "SAIM_FOVColor")
     local targetPartLabel = Instance.new("TextLabel")
     targetPartLabel.Size = UDim2.new(1, -10, 0, 28)
     targetPartLabel.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
@@ -2447,7 +2427,7 @@ local function createGUI()
     targetPartLabel.TextColor3 = Color3.fromRGB(240, 240, 250)
     targetPartLabel.Font = Enum.Font.Gotham
     targetPartLabel.TextSize = 12
-    targetPartLabel.Parent = silentAimTab.right
+    targetPartLabel.Parent = saimTab.right
     local tpCorner = Instance.new("UICorner")
     tpCorner.CornerRadius = UDim.new(0, 6)
     tpCorner.Parent = targetPartLabel
@@ -2455,13 +2435,13 @@ local function createGUI()
     local headBtn = Instance.new("TextButton")
     headBtn.Size = UDim2.new(0.5, -5, 0, 28)
     headBtn.Position = UDim2.new(0, 0, 0, 35)
-    headBtn.BackgroundColor3 = Config.SILENT_AIM_TargetPart == "Head" and accentColor or Color3.fromRGB(50, 50, 60)
+    headBtn.BackgroundColor3 = Config.SAIM_TargetPart == "Head" and accentColor or Color3.fromRGB(50, 50, 60)
     headBtn.BorderSizePixel = 0
     headBtn.Text = "Head"
     headBtn.TextColor3 = Color3.new(1, 1, 1)
     headBtn.Font = Enum.Font.GothamBold
     headBtn.TextSize = 12
-    headBtn.Parent = silentAimTab.right
+    headBtn.Parent = saimTab.right
     local hCorner = Instance.new("UICorner")
     hCorner.CornerRadius = UDim.new(0, 6)
     hCorner.Parent = headBtn
@@ -2469,19 +2449,19 @@ local function createGUI()
     local rootBtn = Instance.new("TextButton")
     rootBtn.Size = UDim2.new(0.5, -5, 0, 28)
     rootBtn.Position = UDim2.new(0.5, 5, 0, 35)
-    rootBtn.BackgroundColor3 = Config.SILENT_AIM_TargetPart == "HumanoidRootPart" and accentColor or Color3.fromRGB(50, 50, 60)
+    rootBtn.BackgroundColor3 = Config.SAIM_TargetPart == "HumanoidRootPart" and accentColor or Color3.fromRGB(50, 50, 60)
     rootBtn.BorderSizePixel = 0
     rootBtn.Text = "Root"
     rootBtn.TextColor3 = Color3.new(1, 1, 1)
     rootBtn.Font = Enum.Font.GothamBold
     rootBtn.TextSize = 12
-    rootBtn.Parent = silentAimTab.right
+    rootBtn.Parent = saimTab.right
     local rCorner = Instance.new("UICorner")
     rCorner.CornerRadius = UDim.new(0, 6)
     rCorner.Parent = rootBtn
     
     headBtn.MouseButton1Click:Connect(function()
-        Config.SILENT_AIM_TargetPart = "Head"
+        Config.SAIM_TargetPart = "Head"
         targetPartLabel.Text = "Target Part: Head"
         headBtn.BackgroundColor3 = accentColor
         rootBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
@@ -2489,25 +2469,62 @@ local function createGUI()
     end)
     
     rootBtn.MouseButton1Click:Connect(function()
-        Config.SILENT_AIM_TargetPart = "HumanoidRootPart"
+        Config.SAIM_TargetPart = "HumanoidRootPart"
         targetPartLabel.Text = "Target Part: Root"
         headBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
         rootBtn.BackgroundColor3 = accentColor
         SaveConfig()
     end)
-    silentAimTab.updateCanvas()
+    saimTab.updateCanvas()
 
     createToggle(miscTab.left, "Enable Desync", "DESYNC_Enabled")
     createSlider(miscTab.left, "Desync Amount", "DESYNC_Amount", 1, 10, 1)
+    
+    -- Разделитель
+    local separator2 = Instance.new("Frame")
+    separator2.Size = UDim2.new(1, -10, 0, 2)
+    separator2.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+    separator2.BorderSizePixel = 0
+    separator2.Parent = miscTab.left
+    local sepGradient2 = Instance.new("UIGradient")
+    sepGradient2.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 50, 50)),
+        ColorSequenceKeypoint.new(0.5, Color3.fromRGB(255, 100, 100)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 50, 50))
+    })
+    sepGradient2.Parent = separator2
+    
     createToggle(miscTab.left, "Enable Chams", "CHAMS_Enabled")
+    createToggle(miscTab.left, "Chams TeamCheck", "CHAMS_TeamCheck")
     createColorSliders(miscTab.left, "Chams Color", "CHAMS_Color")
     createSlider(miscTab.left, "Chams Trans", "CHAMS_Transparency", 0, 1, 0.1)
+    
+    -- Разделитель
+    local separator3 = Instance.new("Frame")
+    separator3.Size = UDim2.new(1, -10, 0, 2)
+    separator3.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+    separator3.BorderSizePixel = 0
+    separator3.Parent = miscTab.right
+    local sepGradient3 = Instance.new("UIGradient")
+    sepGradient3.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 50, 50)),
+        ColorSequenceKeypoint.new(0.5, Color3.fromRGB(255, 100, 100)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 50, 50))
+    })
+    sepGradient3.Parent = separator3
+    
     createToggle(miscTab.right, "Enable Trigger", "TRIGGER_Enabled")
     createSlider(miscTab.right, "Trigger Delay", "TRIGGER_Delay", 10, 200, 10)
-    createToggle(miscTab.right, "Crosshair", "CROSSHAIR_Enabled", function()
-        if Config.CROSSHAIR_Enabled then CreateCrosshair() end
+    
+    createToggle(miscTab.left, "FullBright", "FULLBRIGHT_Enabled", function()
+        if Config.FULLBRIGHT_Enabled then
+            Fullbright.Enable()
+        else
+            Fullbright.Disable()
+        end
+        SaveConfig()
     end)
-    createColorSliders(miscTab.right, "Crosshair Color", "CROSSHAIR_Color")
+    
     createToggle(miscTab.left, "Sky", "SKY_Enabled", function() UpdateSky() end)
     createSkySelector(miscTab.left)
     miscTab.updateCanvas()
@@ -2518,7 +2535,7 @@ local function createGUI()
             btn.BackgroundColor3 = Color3.fromRGB(16, 16, 20)
             btn.TextColor3 = Color3.fromRGB(180, 180, 190)
         end
-        pages["ESP"].page.Visible = true
+        pages["SAIM"].page.Visible = true
         tabs[1].BackgroundColor3 = accentColor
         tabs[1].TextColor3 = Color3.new(1, 1, 1)
     end
@@ -2559,13 +2576,12 @@ local function Unload()
     
     Config.DESYNC_Enabled = false
     Config.TRIGGER_Enabled = false
-    Config.CROSSHAIR_Enabled = false
     Config.SKY_Enabled = false
     Config.CHAMS_Enabled = false
     Desync.active = false
     Trigger.active = false
     
-    pcall(function() RunService:UnbindFromRenderStep("AimbotCore") end)
+    pcall(function() RunService:UnbindFromRenderStep("SAIMCore") end)
     
     for _, c in pairs(Connections) do pcall(function() c:Disconnect() end) end
     
@@ -2577,7 +2593,7 @@ local function Unload()
     end
     CornerBoxESP.objects = {}
     
-    if CrosshairGui then pcall(function() CrosshairGui:Destroy() end) end
+    if VloneWatermark then pcall(function() VloneWatermark:Destroy() end) end
     if CurrentSky then pcall(function() CurrentSky:Destroy() end) end
     
     for _, part in ipairs(Workspace:GetDescendants()) do
@@ -2626,7 +2642,7 @@ Connections.render = RunService.RenderStepped:Connect(function()
     pcall(function() ESP.Step(cam, screenSize, screenCenter) end)
     pcall(function() FPV.Step(cam) end)
     pcall(function() UpdateRadar(cam) end)
-    pcall(function() Aimbot.Step(cam, screenCenter) end)
+    pcall(function() SAIM.RenderFOV(cam, screenCenter) end)
 end)
 
 --[[ ===== INITIALIZATION ===== ]]
@@ -2649,8 +2665,8 @@ pcall(function()
             end
         end
         
-        -- Initialize Silent Aim hooking
-        SilentAim.HookFastCast()
+        -- Initialize SAIM hooking
+        SAIM.HookFastCast()
         
         SaveConfig()
     end)
@@ -2660,8 +2676,8 @@ end)
 if not injector then
     createGUI()
     guiInstance.Enabled = true
-    -- Initialize Silent Aim hooking
-    SilentAim.HookFastCast()
+    -- Initialize SAIM hooking
+    SAIM.HookFastCast()
 end
 
 print("✅ FENT.LOL v2.0 ready! Press INJECT to load or [RightShift] to toggle menu.")
